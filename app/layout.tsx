@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Toaster } from 'sonner'
+import { AuthProvider } from '@/lib/auth-context'
 
 export const metadata: Metadata = {
   title: "Fireplexity - AI-Powered Search",
@@ -15,8 +16,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="font-sans antialiased">
-        {children}
-        <Toaster position="bottom-right" />
+        <AuthProvider>
+          {children}
+          <Toaster position="bottom-right" />
+        </AuthProvider>
       </body>
     </html>
   );

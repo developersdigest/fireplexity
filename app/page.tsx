@@ -18,6 +18,11 @@ import {
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
 import { ErrorDisplay } from '@/components/error-display'
+import { useAuth } from '@/lib/auth-context'
+import { AuthDialog } from '@/components/auth/auth-dialog'
+import { ConversationSidebar } from '@/components/sidebar/conversation-sidebar'
+import { ConversationStorage, type Conversation, type Message } from '@/lib/conversation-storage'
+import { LogOut, User } from 'lucide-react'
 
 interface MessageData {
   sources: SearchResult[]
@@ -26,6 +31,7 @@ interface MessageData {
 }
 
 export default function FireplexityPage() {
+  const { user, logout } = useAuth()
   const [sources, setSources] = useState<SearchResult[]>([])
   const [followUpQuestions, setFollowUpQuestions] = useState<string[]>([])
   const [searchStatus, setSearchStatus] = useState('')
@@ -37,10 +43,13 @@ export default function FireplexityPage() {
   const [firecrawlApiKey, setFirecrawlApiKey] = useState<string>('')
   const [hasApiKey, setHasApiKey] = useState<boolean>(false)
   const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false)
+  const [showAuthDialog, setShowAuthDialog] = useState<boolean>(false)
   const [, setIsCheckingEnv] = useState<boolean>(true)
   const [pendingQuery, setPendingQuery] = useState<string>('')
+  const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false)
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading, data } = useChat({
+  const { messages, input, handleInputChange, handleSubmit, isLoading, data, setMessages } = useChat({
     api: '/api/fireplexity/search',
     body: {
       ...(firecrawlApiKey && { firecrawlApiKey })
@@ -60,10 +69,21 @@ export default function FireplexityPage() {
       console.error('Chat error:', error)
       setSearchStatus('')
     },
-    onFinish: () => {
+    onFinish: (message) => {
       setSearchStatus('')
       // Reset data length tracker
       lastDataLength.current = 0
+      
+      if (user && currentConversation) {
+        const assistantMessage: Omit<Message, 'id' | 'createdAt'> = {
+          role: 'assistant',
+          content: message.content,
+          sources: sources.length > 0 ? sources : undefined,
+          followUpQuestions: followUpQuestions.length > 0 ? followUpQuestions : undefined,
+          ticker: currentTicker || undefined,
+        }
+        ConversationStorage.addMessage(currentConversation.id, user.id, assistantMessage)
+      }
     }
   })
 
@@ -174,6 +194,19 @@ export default function FireplexityPage() {
       return
     }
     
+    if (user && !currentConversation) {
+      const newConversation = ConversationStorage.createConversation(user.id, input.slice(0, 50))
+      setCurrentConversation(newConversation)
+    }
+    
+    if (user && currentConversation) {
+      const userMessage: Omit<Message, 'id' | 'createdAt'> = {
+        role: 'user',
+        content: input,
+      }
+      ConversationStorage.addMessage(currentConversation.id, user.id, userMessage)
+    }
+    
     setHasSearched(true)
     // Clear current data immediately when submitting new query
     setSources([])
@@ -190,6 +223,14 @@ export default function FireplexityPage() {
       setShowApiKeyModal(true)
       e.preventDefault()
       return
+    }
+    
+    if (user && currentConversation) {
+      const userMessage: Omit<Message, 'id' | 'createdAt'> = {
+        role: 'user',
+        content: input,
+      }
+      ConversationStorage.addMessage(currentConversation.id, user.id, userMessage)
     }
     
     // Store current data in messageData before clearing
@@ -214,6 +255,41 @@ export default function FireplexityPage() {
     handleSubmit(e)
   }
 
+  // Conversation management functions
+  const handleConversationSelect = (conversationId: string) => {
+    if (!user) return
+    
+    const conversation = ConversationStorage.getConversation(conversationId, user.id)
+    if (conversation) {
+      setCurrentConversation(conversation)
+      const chatMessages = conversation.messages.map(msg => ({
+        id: msg.id,
+        role: msg.role,
+        content: msg.content,
+        createdAt: new Date(msg.createdAt),
+      }))
+      setMessages(chatMessages)
+      setHasSearched(true)
+      
+      const lastAssistantMessage = conversation.messages.filter(m => m.role === 'assistant').pop()
+      if (lastAssistantMessage) {
+        setSources(lastAssistantMessage.sources || [])
+        setFollowUpQuestions(lastAssistantMessage.followUpQuestions || [])
+        setCurrentTicker(lastAssistantMessage.ticker || null)
+      }
+    }
+  }
+
+  const handleNewConversation = () => {
+    setCurrentConversation(null)
+    setMessages([])
+    setHasSearched(false)
+    setSources([])
+    setFollowUpQuestions([])
+    setCurrentTicker(null)
+    setMessageData(new Map())
+  }
+
   const isChatActive = hasSearched || messages.length > 0
 
   return (
@@ -234,22 +310,51 @@ export default function FireplexityPage() {
               className="w-[113px] h-auto"
             />
           </Link>
-          <Button
-            asChild
-            variant="code"
-            className="font-medium flex items-center gap-2"
-          >
-            <a 
-              href="https://github.com/mendableai/fireplexity" 
-              target="_blank" 
-              rel="noopener noreferrer"
+          <div className="flex items-center gap-2">
+            {user ? (
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 px-3 py-1 bg-gray-100 rounded-lg">
+                  <User className="h-4 w-4" />
+                  <span className="text-sm font-medium">{user.name}</span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={logout}
+                  className="flex items-center gap-1"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Logout
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowAuthDialog(true)}
+                className="flex items-center gap-1"
+              >
+                <User className="h-4 w-4" />
+                Sign In
+              </Button>
+            )}
+            <Button
+              asChild
+              variant="code"
+              className="font-medium flex items-center gap-2"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
-                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
-              </svg>
-              Use this template
-            </a>
-          </Button>
+              <a 
+                href="https://github.com/mendableai/fireplexity" 
+                target="_blank" 
+                rel="noopener noreferrer"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
+                  <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                </svg>
+                Use this template
+              </a>
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -270,30 +375,42 @@ export default function FireplexityPage() {
         </div>
       </div>
 
-      {/* Main content wrapper */}
-      <div className="flex-1 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto h-full">
-          {!isChatActive ? (
-            <SearchComponent 
-              handleSubmit={handleSearch}
-              input={input}
-              handleInputChange={handleInputChange}
-              isLoading={isLoading}
-            />
-          ) : (
-            <ChatInterface 
-              messages={messages}
-              sources={sources}
-              followUpQuestions={followUpQuestions}
-              searchStatus={searchStatus}
-              isLoading={isLoading}
-              input={input}
-              handleInputChange={handleInputChange}
-              handleSubmit={handleChatSubmit}
-              messageData={messageData}
-              currentTicker={currentTicker}
-            />
-          )}
+      {/* Main content wrapper with sidebar */}
+      <div className="flex-1 flex">
+        {user && (
+          <ConversationSidebar
+            currentConversationId={currentConversation?.id}
+            onConversationSelect={handleConversationSelect}
+            onNewConversation={handleNewConversation}
+            isOpen={sidebarOpen}
+            onToggle={() => setSidebarOpen(!sidebarOpen)}
+          />
+        )}
+        
+        <div className={`flex-1 px-4 sm:px-6 lg:px-8 ${user ? 'lg:ml-0' : ''}`}>
+          <div className="max-w-7xl mx-auto h-full">
+            {!isChatActive ? (
+              <SearchComponent 
+                handleSubmit={handleSearch}
+                input={input}
+                handleInputChange={handleInputChange}
+                isLoading={isLoading}
+              />
+            ) : (
+              <ChatInterface 
+                messages={messages}
+                sources={sources}
+                followUpQuestions={followUpQuestions}
+                searchStatus={searchStatus}
+                isLoading={isLoading}
+                input={input}
+                handleInputChange={handleInputChange}
+                handleSubmit={handleChatSubmit}
+                messageData={messageData}
+                currentTicker={currentTicker}
+              />
+            )}
+          </div>
         </div>
       </div>
 
@@ -350,6 +467,12 @@ export default function FireplexityPage() {
           </div>
         </DialogContent>
       </Dialog>
+      
+      {/* Auth Dialog */}
+      <AuthDialog 
+        open={showAuthDialog} 
+        onOpenChange={setShowAuthDialog} 
+      />
     </div>
   )
 }
