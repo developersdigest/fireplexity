@@ -11,6 +11,10 @@ import { useState, useEffect, useRef } from 'react'
 import { toast } from "sonner"
 import { ErrorDisplay } from '@/components/error-display'
 import { AuthModal } from '@/components/auth-modal'
+import { ConversationSidebar } from '@/components/conversation-sidebar'
+import { useQuery, useMutation } from "convex/react"
+import { api } from "@/convex/_generated/api"
+import { Id } from "@/convex/_generated/dataModel"
 
 interface MessageData {
   sources: SearchResult[]
@@ -32,6 +36,8 @@ export default function FireplexityPage() {
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false)
   const [, setIsCheckingAuth] = useState<boolean>(true)
   const [pendingQuery, setPendingQuery] = useState<string>('')
+  const [showSidebar, setShowSidebar] = useState<boolean>(false)
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
 
   const { messages, input, handleInputChange, handleSubmit, isLoading, data } = useChat({
     api: '/api/fireplexity/search',
@@ -126,6 +132,65 @@ export default function FireplexityPage() {
     checkAuth()
   }, [])
 
+  useEffect(() => {
+    if (messages.length === 2 && !currentConversationId && isAuthenticated && user) {
+      const firstUserMessage = messages.find(m => m.role === 'user')
+      if (firstUserMessage) {
+        const title = firstUserMessage.content.slice(0, 50) + (firstUserMessage.content.length > 50 ? '...' : '')
+        createConversation({
+          userId: user.userId as Id<"users">,
+          title
+        }).then((conversationId: string) => {
+          setCurrentConversationId(conversationId)
+          messages.forEach(message => {
+            addMessage({
+              conversationId: conversationId as Id<"conversations">,
+              role: message.role as "user" | "assistant",
+              content: message.content,
+              sources: message.role === 'assistant' ? sources?.map(s => ({
+                title: s.title,
+                url: s.url,
+                content: s.content || '',
+                favicon: s.favicon
+              })) : undefined,
+              followUpQuestions: message.role === 'assistant' ? followUpQuestions : undefined,
+              ticker: message.role === 'assistant' ? currentTicker || undefined : undefined
+            })
+          })
+        })
+      }
+    }
+  }, [messages, currentConversationId, isAuthenticated, user, sources, followUpQuestions, currentTicker])
+
+  const createConversation = useMutation(api.conversations.createConversation)
+  const addMessage = useMutation(api.conversations.addMessage)
+
+  const conversationMessages = useQuery(
+    api.conversations.getConversationMessages,
+    currentConversationId ? { conversationId: currentConversationId as Id<"conversations"> } : "skip"
+  )
+
+  useEffect(() => {
+    if (currentConversationId && messages.length > 2 && isAuthenticated) {
+      const lastMessage = messages[messages.length - 1]
+      if (lastMessage) {
+        addMessage({
+          conversationId: currentConversationId as Id<"conversations">,
+          role: lastMessage.role as "user" | "assistant",
+          content: lastMessage.content,
+          sources: lastMessage.role === 'assistant' ? sources?.map(s => ({
+            title: s.title,
+            url: s.url,
+            content: s.content || '',
+            favicon: s.favicon
+          })) : undefined,
+          followUpQuestions: lastMessage.role === 'assistant' ? followUpQuestions : undefined,
+          ticker: lastMessage.role === 'assistant' ? currentTicker || undefined : undefined
+        })
+      }
+    }
+  }, [messages.length, currentConversationId, sources, followUpQuestions, currentTicker, isAuthenticated])
+
   const handleAuthSuccess = (userData: { userId: string; email: string }) => {
     setUser(userData)
     setIsAuthenticated(true)
@@ -148,11 +213,24 @@ export default function FireplexityPage() {
     }
   }
 
+
   const handleLogout = () => {
     setUser(null)
     setIsAuthenticated(false)
     localStorage.removeItem('fireplexity-user')
+    setCurrentConversationId(null)
+    setShowSidebar(false)
     toast.success('Logged out successfully!')
+  }
+
+  const handleConversationSelect = (conversationId: string) => {
+    setCurrentConversationId(conversationId)
+    setShowSidebar(false)
+  }
+
+  const handleNewConversation = () => {
+    setCurrentConversationId(null)
+    setShowSidebar(false)
   }
 
   const handleSearch = (e: React.FormEvent<HTMLFormElement>) => {
@@ -209,128 +287,152 @@ export default function FireplexityPage() {
   const isChatActive = hasSearched || messages.length > 0
 
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* Header with logo - matching other pages */}
-      <header className="px-4 sm:px-6 lg:px-8 py-1 mt-2">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <Link
-            href="https://firecrawl.dev"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image 
-              src="/firecrawl-logo-with-fire.png" 
-              alt="Firecrawl Logo" 
-              width={113} 
-              height={24}
-              className="w-[113px] h-auto"
-            />
-          </Link>
-          <Button
-            asChild
-            variant="code"
-            className="font-medium flex items-center gap-2"
-          >
-            <a 
-              href="https://github.com/mendableai/fireplexity" 
-              target="_blank" 
-              rel="noopener noreferrer"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
-                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
-              </svg>
-              Use this template
-            </a>
-          </Button>
-        </div>
-      </header>
-
-      {/* Hero section - matching other pages */}
-      <div className={`px-4 sm:px-6 lg:px-8 pt-2 pb-4 transition-all duration-500 ${isChatActive ? 'opacity-0 h-0 overflow-hidden' : 'opacity-100'}`}>
-        <div className="max-w-7xl mx-auto text-center">
-          <h1 className="text-[2.5rem] lg:text-[3.8rem] text-[#36322F] dark:text-white font-semibold tracking-tight leading-[1.1] opacity-0 animate-fade-up [animation-duration:500ms] [animation-delay:200ms] [animation-fill-mode:forwards]">
-            <span className="relative px-1 pb-1 text-transparent bg-clip-text bg-gradient-to-tr from-red-600 to-yellow-500 inline-flex justify-center items-center">
-              Fireplexity
-            </span>
-            <span className="block leading-[1.1] opacity-0 animate-fade-up [animation-duration:500ms] [animation-delay:400ms] [animation-fill-mode:forwards]">
-              Search & Scrape
-            </span>
-          </h1>
-          <p className="mt-3 text-lg text-zinc-600 dark:text-zinc-400 opacity-0 animate-fade-up [animation-duration:500ms] [animation-delay:600ms] [animation-fill-mode:forwards]">
-            AI-powered web search with instant results and follow-up questions
-          </p>
-        </div>
-      </div>
-
-      {/* Main content wrapper */}
-      <div className="flex-1 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto h-full">
-          {!isChatActive ? (
-            <SearchComponent 
-              handleSubmit={handleSearch}
-              input={input}
-              handleInputChange={handleInputChange}
-              isLoading={isLoading}
-            />
-          ) : (
-            <ChatInterface 
-              messages={messages}
-              sources={sources}
-              followUpQuestions={followUpQuestions}
-              searchStatus={searchStatus}
-              isLoading={isLoading}
-              input={input}
-              handleInputChange={handleInputChange}
-              handleSubmit={handleChatSubmit}
-              messageData={messageData}
-              currentTicker={currentTicker}
-            />
-          )}
-        </div>
-      </div>
-
-      {/* Footer - matching other pages */}
-      <footer className="px-4 sm:px-6 lg:px-8 py-8 mt-auto">
-        <div className="max-w-7xl mx-auto text-center">
-          <p className="text-sm text-gray-600 dark:text-gray-400">
-            Powered by{' '}
-            <a 
-              href="https://firecrawl.dev" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="text-orange-600 hover:text-orange-700 dark:text-orange-400 dark:hover:text-orange-300 font-medium"
-            >
-              Firecrawl
-            </a>
-          </p>
-        </div>
-      </footer>
-      
-      {/* Authentication Modal */}
-      <AuthModal 
-        isOpen={showAuthModal} 
-        onClose={() => setShowAuthModal(false)}
-        onSuccess={handleAuthSuccess}
-      />
-      
-      {/* User Status Display */}
+    <div className="min-h-screen flex">
       {isAuthenticated && user && (
-        <div className="fixed top-4 right-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 shadow-lg">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600 dark:text-gray-400">
-              {user.email}
-            </span>
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              onClick={handleLogout}
-              className="text-xs"
+        <ConversationSidebar
+          user={user}
+          currentConversationId={currentConversationId}
+          onConversationSelect={handleConversationSelect}
+          onNewConversation={handleNewConversation}
+          isOpen={showSidebar}
+          onToggle={() => setShowSidebar(!showSidebar)}
+        />
+      )}
+      
+      <div className="flex-1 flex flex-col">
+        <header className="px-4 sm:px-6 lg:px-8 py-1 mt-2">
+          <div className="max-w-4xl mx-auto flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              {isAuthenticated && user && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowSidebar(!showSidebar)}
+                  className="lg:hidden"
+                >
+                  ☰
+                </Button>
+              )}
+              <Link
+                href="https://firecrawl.dev"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Image 
+                  src="/firecrawl-logo-with-fire.png" 
+                  alt="Firecrawl Logo" 
+                  width={113} 
+                  height={24}
+                  className="w-[113px] h-auto"
+                />
+              </Link>
+            </div>
+            <Button
+              asChild
+              variant="code"
+              className="font-medium flex items-center gap-2"
             >
-              Logout
+              <a 
+                href="https://github.com/mendableai/fireplexity" 
+                target="_blank" 
+                rel="noopener noreferrer"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
+                  <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                </svg>
+                Use this template
+              </a>
             </Button>
           </div>
+        </header>
+
+        {/* Hero section - matching other pages */}
+        <div className={`px-4 sm:px-6 lg:px-8 pt-2 pb-4 transition-all duration-500 ${isChatActive ? 'opacity-0 h-0 overflow-hidden' : 'opacity-100'}`}>
+          <div className="max-w-7xl mx-auto text-center">
+            <h1 className="text-[2.5rem] lg:text-[3.8rem] text-[#36322F] dark:text-white font-semibold tracking-tight leading-[1.1] opacity-0 animate-fade-up [animation-duration:500ms] [animation-delay:200ms] [animation-fill-mode:forwards]">
+              <span className="relative px-1 pb-1 text-transparent bg-clip-text bg-gradient-to-tr from-red-600 to-yellow-500 inline-flex justify-center items-center">
+                Fireplexity
+              </span>
+              <span className="block leading-[1.1] opacity-0 animate-fade-up [animation-duration:500ms] [animation-delay:400ms] [animation-fill-mode:forwards]">
+                Search & Scrape
+              </span>
+            </h1>
+            <p className="mt-3 text-lg text-zinc-600 dark:text-zinc-400 opacity-0 animate-fade-up [animation-duration:500ms] [animation-delay:600ms] [animation-fill-mode:forwards]">
+              AI-powered web search with instant results and follow-up questions
+            </p>
+          </div>
         </div>
-      )}
+
+        {/* Main content wrapper */}
+        <div className="flex-1 px-4 sm:px-6 lg:px-8">
+          <div className="max-w-7xl mx-auto h-full">
+            {!isChatActive ? (
+              <SearchComponent 
+                handleSubmit={handleSearch}
+                input={input}
+                handleInputChange={handleInputChange}
+                isLoading={isLoading}
+              />
+            ) : (
+              <ChatInterface 
+                messages={messages}
+                sources={sources}
+                followUpQuestions={followUpQuestions}
+                searchStatus={searchStatus}
+                isLoading={isLoading}
+                input={input}
+                handleInputChange={handleInputChange}
+                handleSubmit={handleChatSubmit}
+                messageData={messageData}
+                currentTicker={currentTicker}
+              />
+            )}
+          </div>
+        </div>
+
+        {/* Footer - matching other pages */}
+        <footer className="px-4 sm:px-6 lg:px-8 py-8 mt-auto">
+          <div className="max-w-7xl mx-auto text-center">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Powered by{' '}
+              <a 
+                href="https://firecrawl.dev" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="text-orange-600 hover:text-orange-700 dark:text-orange-400 dark:hover:text-orange-300 font-medium"
+              >
+                Firecrawl
+              </a>
+            </p>
+          </div>
+        </footer>
+        
+        {/* Authentication Modal */}
+        <AuthModal 
+          isOpen={showAuthModal} 
+          onClose={() => setShowAuthModal(false)}
+          onSuccess={handleAuthSuccess}
+        />
+        
+        {/* User Status Display */}
+        {isAuthenticated && user && (
+          <div className="fixed top-4 right-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 shadow-lg z-50">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-600 dark:text-gray-400">
+                {user.email}
+              </span>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={handleLogout}
+                className="text-xs"
+              >
+                Logout
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

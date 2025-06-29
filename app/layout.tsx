@@ -1,11 +1,10 @@
-import type { Metadata } from "next";
+"use client"
+
 import "./globals.css";
 import { Toaster } from 'sonner'
+import { ConvexProvider, ConvexReactClient } from "convex/react";
 
-export const metadata: Metadata = {
-  title: "Fireplexity - AI-Powered Search",
-  description: "Advanced search with AI-powered insights and real-time stock information",
-};
+const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 export default function RootLayout({
   children,
@@ -15,7 +14,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="font-sans antialiased">
-        {children}
+        <ConvexProvider client={convex}>
+          {children}
+        </ConvexProvider>
         <Toaster position="bottom-right" />
       </body>
     </html>
