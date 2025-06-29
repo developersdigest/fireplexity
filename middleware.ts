@@ -1,6 +1,15 @@
 import { authkitMiddleware } from '@workos-inc/authkit-nextjs';
 
-export default authkitMiddleware();
+export default authkitMiddleware({
+  middlewareAuth: {
+    enabled: true,
+    unauthenticatedPaths: [
+      '/',
+      '/api/auth/callback',
+      '/api/webhooks/polar',
+    ],
+  },
+});
 
 export const config = {
   matcher: [

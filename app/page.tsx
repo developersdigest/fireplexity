@@ -6,8 +6,14 @@ import { withAuth } from '@workos-inc/authkit-nextjs'
 import { redirect } from 'next/navigation'
 
 export default async function LandingPage() {
-  // Check if user is authenticated
-  const { user } = await withAuth()
+  // Check if user is authenticated (graceful fallback if AuthKit not configured)
+  let user = null
+  try {
+    const authResult = await withAuth()
+    user = authResult.user
+  } catch (error) {
+    console.log('AuthKit not configured, proceeding as unauthenticated user')
+  }
   
   // If authenticated, redirect to dashboard
   if (user) {
