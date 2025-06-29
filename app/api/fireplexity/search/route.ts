@@ -18,12 +18,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 })
     }
 
-    // Use API key from request body if provided, otherwise fall back to environment variable
-    const firecrawlApiKey = body.firecrawlApiKey || process.env.FIRECRAWL_API_KEY
+    const firecrawlApiKey = process.env.FIRECRAWL_API_KEY
     const openaiApiKey = process.env.OPENAI_API_KEY
+    const userId = body.userId
     
     if (!firecrawlApiKey) {
       return NextResponse.json({ error: 'Firecrawl API key not configured' }, { status: 500 })
+    }
+    
+    if (!userId) {
+      return NextResponse.json({ error: 'User authentication required' }, { status: 401 })
     }
     
     if (!openaiApiKey) {

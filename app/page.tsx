@@ -8,16 +8,9 @@ import { Button } from '@/components/ui/button'
 import Link from 'next/link'
 import Image from 'next/image'
 import { useState, useEffect, useRef } from 'react'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
 import { ErrorDisplay } from '@/components/error-display'
+import { AuthModal } from '@/components/auth-modal'
 
 interface MessageData {
   sources: SearchResult[]
@@ -34,16 +27,16 @@ export default function FireplexityPage() {
   const [messageData, setMessageData] = useState<Map<number, MessageData>>(new Map())
   const currentMessageIndex = useRef(0)
   const [currentTicker, setCurrentTicker] = useState<string | null>(null)
-  const [firecrawlApiKey, setFirecrawlApiKey] = useState<string>('')
-  const [hasApiKey, setHasApiKey] = useState<boolean>(false)
-  const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false)
-  const [, setIsCheckingEnv] = useState<boolean>(true)
+  const [user, setUser] = useState<{ userId: string; email: string } | null>(null)
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false)
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(false)
+  const [, setIsCheckingAuth] = useState<boolean>(true)
   const [pendingQuery, setPendingQuery] = useState<string>('')
 
   const { messages, input, handleInputChange, handleSubmit, isLoading, data } = useChat({
     api: '/api/fireplexity/search',
     body: {
-      ...(firecrawlApiKey && { firecrawlApiKey })
+      userId: user?.userId
     },
     onResponse: () => {
       // Clear status when response starts
@@ -112,65 +105,64 @@ export default function FireplexityPage() {
   }, [data, messageData])
 
 
-  // Check for environment variables on mount
+  // Check for user authentication on mount
   useEffect(() => {
-    const checkApiKey = async () => {
+    const checkAuth = async () => {
       try {
-        const response = await fetch('/api/fireplexity/check-env')
-        const data = await response.json()
-        
-        if (data.hasFirecrawlKey) {
-          setHasApiKey(true)
-        } else {
-          // Check localStorage for user's API key
-          const storedKey = localStorage.getItem('firecrawl-api-key')
-          if (storedKey) {
-            setFirecrawlApiKey(storedKey)
-            setHasApiKey(true)
-          }
+        // Check localStorage for user session
+        const storedUser = localStorage.getItem('fireplexity-user')
+        if (storedUser) {
+          const userData = JSON.parse(storedUser)
+          setUser(userData)
+          setIsAuthenticated(true)
         }
       } catch (error) {
-        console.error('Error checking environment:', error)
+        console.error('Error checking authentication:', error)
       } finally {
-        setIsCheckingEnv(false)
+        setIsCheckingAuth(false)
       }
     }
     
-    checkApiKey()
+    checkAuth()
   }, [])
 
-  const handleApiKeySubmit = () => {
-    if (firecrawlApiKey.trim()) {
-      localStorage.setItem('firecrawl-api-key', firecrawlApiKey)
-      setHasApiKey(true)
-      setShowApiKeyModal(false)
-      toast.success('API key saved successfully!')
-      
-      // If there's a pending query, submit it
-      if (pendingQuery) {
-        const fakeEvent = {
-          preventDefault: () => {},
-          currentTarget: {
-            querySelector: () => ({ value: pendingQuery })
-          }
-        } as any
-        handleInputChange({ target: { value: pendingQuery } } as any)
-        setTimeout(() => {
-          handleSubmit(fakeEvent)
-          setPendingQuery('')
-        }, 100)
-      }
+  const handleAuthSuccess = (userData: { userId: string; email: string }) => {
+    setUser(userData)
+    setIsAuthenticated(true)
+    localStorage.setItem('fireplexity-user', JSON.stringify(userData))
+    setShowAuthModal(false)
+    
+    // If there's a pending query, submit it
+    if (pendingQuery) {
+      const fakeEvent = {
+        preventDefault: () => {},
+        currentTarget: {
+          querySelector: () => ({ value: pendingQuery })
+        }
+      } as any
+      handleInputChange({ target: { value: pendingQuery } } as any)
+      setTimeout(() => {
+        handleSubmit(fakeEvent)
+        setPendingQuery('')
+      }, 100)
     }
+  }
+
+  const handleLogout = () => {
+    setUser(null)
+    setIsAuthenticated(false)
+    localStorage.removeItem('fireplexity-user')
+    toast.success('Logged out successfully!')
   }
 
   const handleSearch = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!input.trim()) return
     
-    // Check if we have an API key
-    if (!hasApiKey) {
+    // Check if user is authenticated
+    if (!isAuthenticated) {
       setPendingQuery(input)
-      setShowApiKeyModal(true)
+      setShowAuthModal(true)
       return
     }
     
@@ -184,10 +176,10 @@ export default function FireplexityPage() {
   
   // Wrapped submit handler for chat interface
   const handleChatSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    // Check if we have an API key
-    if (!hasApiKey) {
+    // Check if user is authenticated
+    if (!isAuthenticated) {
       setPendingQuery(input)
-      setShowApiKeyModal(true)
+      setShowAuthModal(true)
       e.preventDefault()
       return
     }
@@ -314,42 +306,31 @@ export default function FireplexityPage() {
         </div>
       </footer>
       
-      {/* API Key Modal */}
-      <Dialog open={showApiKeyModal} onOpenChange={setShowApiKeyModal}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Firecrawl API Key Required</DialogTitle>
-            <DialogDescription>
-              To use Fireplexity search, you need a Firecrawl API key. Get one for free at{' '}
-              <a 
-                href="https://www.firecrawl.dev" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-orange-600 hover:text-orange-700 underline"
-              >
-                firecrawl.dev
-              </a>
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <Input
-              placeholder="Enter your Firecrawl API key"
-              value={firecrawlApiKey}
-              onChange={(e) => setFirecrawlApiKey(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  handleApiKeySubmit()
-                }
-              }}
-              className="h-12"
-            />
-            <Button onClick={handleApiKeySubmit} variant="orange" className="w-full">
-              Save API Key
+      {/* Authentication Modal */}
+      <AuthModal 
+        isOpen={showAuthModal} 
+        onClose={() => setShowAuthModal(false)}
+        onSuccess={handleAuthSuccess}
+      />
+      
+      {/* User Status Display */}
+      {isAuthenticated && user && (
+        <div className="fixed top-4 right-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 shadow-lg">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-600 dark:text-gray-400">
+              {user.email}
+            </span>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={handleLogout}
+              className="text-xs"
+            >
+              Logout
             </Button>
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      )}
     </div>
   )
 }
