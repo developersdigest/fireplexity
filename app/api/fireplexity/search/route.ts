@@ -4,22 +4,40 @@ import { streamText, generateText, createDataStreamResponse } from 'ai'
 import { detectCompanyTicker } from '@/lib/company-ticker-map'
 import { selectRelevantContent } from '@/lib/content-selection'
 import FirecrawlApp from '@mendable/firecrawl-js'
+import { getServerSession } from "next-auth"
+import { authOptions } from "@/lib/auth"
+import { prisma } from "@/lib/prisma"
 
 export async function POST(request: Request) {
   const requestId = Math.random().toString(36).substring(7)
   console.log(`[${requestId}] Fireplexity Search API called`)
   try {
+    const session = await getServerSession(authOptions)
+    
+    if (!session?.user?.email) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
+    }
+
     const body = await request.json()
     const messages = body.messages || []
     const query = messages[messages.length - 1]?.content || body.query
+    const conversationId = body.conversationId
     console.log(`[${requestId}] Query received:`, query)
 
     if (!query) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 })
     }
 
-    // Use API key from request body if provided, otherwise fall back to environment variable
-    const firecrawlApiKey = body.firecrawlApiKey || process.env.FIRECRAWL_API_KEY
+    const user = await prisma.user.findUnique({
+      where: { email: session.user.email }
+    })
+
+    if (!user) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 })
+    }
+
+    // Use API key from environment variable (no more localStorage keys)
+    const firecrawlApiKey = process.env.FIRECRAWL_API_KEY
     const openaiApiKey = process.env.OPENAI_API_KEY
     
     if (!firecrawlApiKey) {
@@ -41,6 +59,35 @@ export async function POST(request: Request) {
     // Always perform a fresh search for each query to ensure relevant results
     const isFollowUp = messages.length > 2
     
+    let conversation
+    if (conversationId) {
+      conversation = await prisma.conversation.findFirst({
+        where: { 
+          id: conversationId,
+          userId: user.id 
+        }
+      })
+      if (!conversation) {
+        return NextResponse.json({ error: 'Conversation not found' }, { status: 404 })
+      }
+    } else {
+      const title = query.length > 50 ? query.substring(0, 50) + "..." : query
+      conversation = await prisma.conversation.create({
+        data: {
+          title,
+          userId: user.id
+        }
+      })
+    }
+
+    const userMessage = await prisma.message.create({
+      data: {
+        role: 'user',
+        content: query,
+        conversationId: conversation.id
+      }
+    })
+
     // Use createDataStreamResponse with a custom data stream
     return createDataStreamResponse({
       execute: async (dataStream) => {
@@ -220,6 +267,25 @@ export async function POST(request: Request) {
 
           // Send follow-up questions after the answer is complete
           dataStream.writeData({ type: 'follow_up_questions', questions: followUpQuestions })
+
+          await prisma.message.create({
+            data: {
+              role: 'assistant',
+              content: fullAnswer,
+              conversationId: conversation.id,
+              sources: sources,
+              followUpQuestions: followUpQuestions,
+              ticker: ticker || null
+            }
+          })
+
+          // Update conversation timestamp
+          await prisma.conversation.update({
+            where: { id: conversation.id },
+            data: { updatedAt: new Date() }
+          })
+
+          dataStream.writeData({ type: 'conversation_id', conversationId: conversation.id })
           
           // Signal completion
           dataStream.writeData({ type: 'complete' })

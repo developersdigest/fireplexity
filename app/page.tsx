@@ -8,16 +8,14 @@ import { Button } from '@/components/ui/button'
 import Link from 'next/link'
 import Image from 'next/image'
 import { useState, useEffect, useRef } from 'react'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
 import { ErrorDisplay } from '@/components/error-display'
+import { useSession } from "next-auth/react"
+import { AuthButton } from "@/components/auth-button"
+import { Sidebar } from "@/components/sidebar"
+import { useConversations } from "@/hooks/use-conversations"
+import { useSearchParams, useRouter } from "next/navigation"
+import { Menu, X } from "lucide-react"
 
 interface MessageData {
   sources: SearchResult[]
@@ -26,6 +24,7 @@ interface MessageData {
 }
 
 export default function FireplexityPage() {
+  const { data: session, status } = useSession()
   const [sources, setSources] = useState<SearchResult[]>([])
   const [followUpQuestions, setFollowUpQuestions] = useState<string[]>([])
   const [searchStatus, setSearchStatus] = useState('')
@@ -34,16 +33,16 @@ export default function FireplexityPage() {
   const [messageData, setMessageData] = useState<Map<number, MessageData>>(new Map())
   const currentMessageIndex = useRef(0)
   const [currentTicker, setCurrentTicker] = useState<string | null>(null)
-  const [firecrawlApiKey, setFirecrawlApiKey] = useState<string>('')
-  const [hasApiKey, setHasApiKey] = useState<boolean>(false)
-  const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false)
-  const [, setIsCheckingEnv] = useState<boolean>(true)
-  const [pendingQuery, setPendingQuery] = useState<string>('')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
+  const { currentConversation, fetchConversation, createConversation } = useConversations()
+  const searchParams = useSearchParams()
+  const router = useRouter()
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading, data } = useChat({
+  const { messages, input, handleInputChange, handleSubmit, isLoading, data, setMessages } = useChat({
     api: '/api/fireplexity/search',
     body: {
-      ...(firecrawlApiKey && { firecrawlApiKey })
+      conversationId: currentConversationId
     },
     onResponse: () => {
       // Clear status when response starts
@@ -76,13 +75,19 @@ export default function FireplexityPage() {
       newItems.forEach((item) => {
         if (!item || typeof item !== 'object' || !('type' in item)) return
         
-        const typedItem = item as unknown as { type: string; message?: string; sources?: SearchResult[]; questions?: string[]; symbol?: string }
+        const typedItem = item as unknown as { 
+          type: string; 
+          message?: string; 
+          sources?: SearchResult[]; 
+          questions?: string[]; 
+          symbol?: string;
+          conversationId?: string;
+        }
         if (typedItem.type === 'status') {
           setSearchStatus(typedItem.message || '')
         }
         if (typedItem.type === 'ticker' && typedItem.symbol) {
           setCurrentTicker(typedItem.symbol)
-          // Also store in message data map
           const newMap = new Map(messageData)
           const existingData = newMap.get(currentMessageIndex.current) || { sources: [], followUpQuestions: [] }
           newMap.set(currentMessageIndex.current, { ...existingData, ticker: typedItem.symbol })
@@ -90,7 +95,6 @@ export default function FireplexityPage() {
         }
         if (typedItem.type === 'sources' && typedItem.sources) {
           setSources(typedItem.sources)
-          // Also store in message data map
           const newMap = new Map(messageData)
           const existingData = newMap.get(currentMessageIndex.current) || { sources: [], followUpQuestions: [] }
           newMap.set(currentMessageIndex.current, { ...existingData, sources: typedItem.sources })
@@ -98,11 +102,16 @@ export default function FireplexityPage() {
         }
         if (typedItem.type === 'follow_up_questions' && typedItem.questions) {
           setFollowUpQuestions(typedItem.questions)
-          // Also store in message data map
           const newMap = new Map(messageData)
           const existingData = newMap.get(currentMessageIndex.current) || { sources: [], followUpQuestions: [] }
           newMap.set(currentMessageIndex.current, { ...existingData, followUpQuestions: typedItem.questions })
           setMessageData(newMap)
+        }
+        if (typedItem.type === 'conversation_id' && typedItem.conversationId) {
+          if (!currentConversationId) {
+            setCurrentConversationId(typedItem.conversationId)
+            router.push(`/?conversation=${typedItem.conversationId}`)
+          }
         }
       })
       
@@ -112,244 +121,191 @@ export default function FireplexityPage() {
   }, [data, messageData])
 
 
-  // Check for environment variables on mount
+  // Handle conversation loading from URL
   useEffect(() => {
-    const checkApiKey = async () => {
-      try {
-        const response = await fetch('/api/fireplexity/check-env')
-        const data = await response.json()
-        
-        if (data.hasFirecrawlKey) {
-          setHasApiKey(true)
-        } else {
-          // Check localStorage for user's API key
-          const storedKey = localStorage.getItem('firecrawl-api-key')
-          if (storedKey) {
-            setFirecrawlApiKey(storedKey)
-            setHasApiKey(true)
-          }
-        }
-      } catch (error) {
-        console.error('Error checking environment:', error)
-      } finally {
-        setIsCheckingEnv(false)
-      }
+    const conversationId = searchParams.get('conversation')
+    if (conversationId && conversationId !== currentConversationId) {
+      setCurrentConversationId(conversationId)
+      loadConversation(conversationId)
+    } else if (!conversationId && currentConversationId) {
+      setCurrentConversationId(null)
+      setMessages([])
+      setSources([])
+      setFollowUpQuestions([])
+      setCurrentTicker(null)
+      setMessageData(new Map())
+      setHasSearched(false)
     }
-    
-    checkApiKey()
-  }, [])
+  }, [searchParams, currentConversationId])
 
-  const handleApiKeySubmit = () => {
-    if (firecrawlApiKey.trim()) {
-      localStorage.setItem('firecrawl-api-key', firecrawlApiKey)
-      setHasApiKey(true)
-      setShowApiKeyModal(false)
-      toast.success('API key saved successfully!')
-      
-      // If there's a pending query, submit it
-      if (pendingQuery) {
-        const fakeEvent = {
-          preventDefault: () => {},
-          currentTarget: {
-            querySelector: () => ({ value: pendingQuery })
+  const loadConversation = async (conversationId: string) => {
+    try {
+      const conversation = await fetchConversation(conversationId)
+      if (conversation) {
+        const chatMessages = conversation.messages.map((msg: any) => ({
+          id: msg.id,
+          role: msg.role,
+          content: msg.content,
+          createdAt: new Date(msg.createdAt)
+        }))
+        setMessages(chatMessages)
+        setHasSearched(chatMessages.length > 0)
+        
+        const newMessageData = new Map()
+        conversation.messages.forEach((msg: any, index: number) => {
+          if (msg.role === 'assistant') {
+            const assistantIndex = Math.floor(index / 2)
+            newMessageData.set(assistantIndex, {
+              sources: msg.sources || [],
+              followUpQuestions: msg.followUpQuestions || [],
+              ticker: msg.ticker || null
+            })
           }
-        } as any
-        handleInputChange({ target: { value: pendingQuery } } as any)
-        setTimeout(() => {
-          handleSubmit(fakeEvent)
-          setPendingQuery('')
-        }, 100)
+        })
+        setMessageData(newMessageData)
+        
+        const lastAssistantMessage = conversation.messages
+          .filter((msg: any) => msg.role === 'assistant')
+          .pop()
+        
+        if (lastAssistantMessage) {
+          setSources(lastAssistantMessage.sources || [])
+          setFollowUpQuestions(lastAssistantMessage.followUpQuestions || [])
+          setCurrentTicker(lastAssistantMessage.ticker || null)
+        }
       }
+    } catch (error) {
+      console.error('Error loading conversation:', error)
+      toast.error('Failed to load conversation')
     }
   }
 
-  const handleSearch = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    if (!input.trim()) return
-    
-    // Check if we have an API key
-    if (!hasApiKey) {
-      setPendingQuery(input)
-      setShowApiKeyModal(true)
+
+  const handleSearch = (query: string) => {
+    if (status !== "authenticated") {
+      toast.error("Please sign in to search")
       return
     }
     
     setHasSearched(true)
-    // Clear current data immediately when submitting new query
     setSources([])
     setFollowUpQuestions([])
     setCurrentTicker(null)
-    handleSubmit(e)
+    currentMessageIndex.current = Math.floor(messages.length / 2)
+    
+    handleInputChange({ target: { value: query } } as any)
+    handleSubmit({ preventDefault: () => {} } as any)
   }
-  
-  // Wrapped submit handler for chat interface
-  const handleChatSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    // Check if we have an API key
-    if (!hasApiKey) {
-      setPendingQuery(input)
-      setShowApiKeyModal(true)
+
+  const handleChatSubmit = (e: React.FormEvent) => {
+    if (status !== "authenticated") {
       e.preventDefault()
+      toast.error("Please sign in to continue the conversation")
       return
     }
     
-    // Store current data in messageData before clearing
-    if (messages.length > 0 && sources.length > 0) {
-      const assistantMessages = messages.filter(m => m.role === 'assistant')
-      const lastAssistantIndex = assistantMessages.length - 1
-      if (lastAssistantIndex >= 0) {
-        const newMap = new Map(messageData)
-        newMap.set(lastAssistantIndex, {
-          sources: sources,
-          followUpQuestions: followUpQuestions,
-          ticker: currentTicker || undefined
-        })
-        setMessageData(newMap)
-      }
+    if (!hasSearched) {
+      setHasSearched(true)
     }
     
-    // Clear current data immediately when submitting new query
     setSources([])
     setFollowUpQuestions([])
     setCurrentTicker(null)
+    currentMessageIndex.current = Math.floor(messages.length / 2)
+    
     handleSubmit(e)
   }
 
-  const isChatActive = hasSearched || messages.length > 0
+  if (status === "loading") {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-orange-50 via-red-50 to-pink-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* Header with logo - matching other pages */}
-      <header className="px-4 sm:px-6 lg:px-8 py-1 mt-2">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <Link
-            href="https://firecrawl.dev"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image 
-              src="/firecrawl-logo-with-fire.png" 
-              alt="Firecrawl Logo" 
-              width={113} 
-              height={24}
-              className="w-[113px] h-auto"
-            />
-          </Link>
-          <Button
-            asChild
-            variant="code"
-            className="font-medium flex items-center gap-2"
-          >
-            <a 
-              href="https://github.com/mendableai/fireplexity" 
-              target="_blank" 
-              rel="noopener noreferrer"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
-                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
-              </svg>
-              Use this template
-            </a>
-          </Button>
-        </div>
-      </header>
-
-      {/* Hero section - matching other pages */}
-      <div className={`px-4 sm:px-6 lg:px-8 pt-2 pb-4 transition-all duration-500 ${isChatActive ? 'opacity-0 h-0 overflow-hidden' : 'opacity-100'}`}>
-        <div className="max-w-7xl mx-auto text-center">
-          <h1 className="text-[2.5rem] lg:text-[3.8rem] text-[#36322F] dark:text-white font-semibold tracking-tight leading-[1.1] opacity-0 animate-fade-up [animation-duration:500ms] [animation-delay:200ms] [animation-fill-mode:forwards]">
-            <span className="relative px-1 pb-1 text-transparent bg-clip-text bg-gradient-to-tr from-red-600 to-yellow-500 inline-flex justify-center items-center">
-              Fireplexity
-            </span>
-            <span className="block leading-[1.1] opacity-0 animate-fade-up [animation-duration:500ms] [animation-delay:400ms] [animation-fill-mode:forwards]">
-              Search & Scrape
-            </span>
-          </h1>
-          <p className="mt-3 text-lg text-zinc-600 dark:text-zinc-400 opacity-0 animate-fade-up [animation-duration:500ms] [animation-delay:600ms] [animation-fill-mode:forwards]">
-            AI-powered web search with instant results and follow-up questions
-          </p>
-        </div>
-      </div>
-
-      {/* Main content wrapper */}
-      <div className="flex-1 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto h-full">
-          {!isChatActive ? (
-            <SearchComponent 
-              handleSubmit={handleSearch}
-              input={input}
-              handleInputChange={handleInputChange}
-              isLoading={isLoading}
-            />
-          ) : (
-            <ChatInterface 
-              messages={messages}
-              sources={sources}
-              followUpQuestions={followUpQuestions}
-              searchStatus={searchStatus}
-              isLoading={isLoading}
-              input={input}
-              handleInputChange={handleInputChange}
-              handleSubmit={handleChatSubmit}
-              messageData={messageData}
-              currentTicker={currentTicker}
-            />
-          )}
-        </div>
-      </div>
-
-      {/* Footer - matching other pages */}
-      <footer className="px-4 sm:px-6 lg:px-8 py-8 mt-auto">
-        <div className="max-w-7xl mx-auto text-center">
-          <p className="text-sm text-gray-600 dark:text-gray-400">
-            Powered by{' '}
-            <a 
-              href="https://firecrawl.dev" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="text-orange-600 hover:text-orange-700 dark:text-orange-400 dark:hover:text-orange-300 font-medium"
-            >
-              Firecrawl
-            </a>
-          </p>
-        </div>
-      </footer>
+    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-red-50 to-pink-50 flex">
+      {session && (
+        <Sidebar 
+          isOpen={sidebarOpen} 
+          onToggle={() => setSidebarOpen(!sidebarOpen)}
+          currentConversationId={currentConversationId}
+        />
+      )}
       
-      {/* API Key Modal */}
-      <Dialog open={showApiKeyModal} onOpenChange={setShowApiKeyModal}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Firecrawl API Key Required</DialogTitle>
-            <DialogDescription>
-              To use Fireplexity search, you need a Firecrawl API key. Get one for free at{' '}
-              <a 
-                href="https://www.firecrawl.dev" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-orange-600 hover:text-orange-700 underline"
-              >
-                firecrawl.dev
-              </a>
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <Input
-              placeholder="Enter your Firecrawl API key"
-              value={firecrawlApiKey}
-              onChange={(e) => setFirecrawlApiKey(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
+      <div className={`flex-1 transition-all duration-300 ${session ? 'lg:ml-0' : ''}`}>
+        <div className="container mx-auto px-4 py-8">
+          <div className="max-w-4xl mx-auto">
+            <div className="text-center mb-8">
+              <div className="flex items-center justify-between mb-4">
+                {session && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSidebarOpen(!sidebarOpen)}
+                    className="lg:hidden"
+                  >
+                    <Menu className="h-4 w-4" />
+                  </Button>
+                )}
+                
+                <div className="flex items-center justify-center gap-3 flex-1">
+                  <Image
+                    src="/logo.png"
+                    alt="Fireplexity Logo"
+                    width={48}
+                    height={48}
+                    className="rounded-lg"
+                  />
+                  <h1 className="text-4xl font-bold bg-gradient-to-r from-orange-600 to-red-600 bg-clip-text text-transparent">
+                    Fireplexity
+                  </h1>
+                </div>
+                
+                <AuthButton />
+              </div>
+              <p className="text-gray-600 text-lg">
+                AI-powered search with real-time insights
+              </p>
+            </div>
+
+            {!session ? (
+              <div className="text-center py-12">
+                <h2 className="text-2xl font-semibold mb-4">Welcome to Fireplexity</h2>
+                <p className="text-gray-600 mb-6">Sign in to start searching and save your conversations</p>
+                <AuthButton />
+              </div>
+            ) : !hasSearched ? (
+              <SearchComponent 
+                handleSubmit={(e) => {
                   e.preventDefault()
-                  handleApiKeySubmit()
-                }
-              }}
-              className="h-12"
-            />
-            <Button onClick={handleApiKeySubmit} variant="orange" className="w-full">
-              Save API Key
-            </Button>
+                  handleSearch(input)
+                }}
+                input={input}
+                handleInputChange={handleInputChange}
+                isLoading={isLoading}
+              />
+            ) : (
+              <ChatInterface
+                messages={messages}
+                input={input}
+                handleInputChange={handleInputChange}
+                handleSubmit={handleChatSubmit}
+                isLoading={isLoading}
+                sources={sources}
+                followUpQuestions={followUpQuestions}
+                searchStatus={searchStatus}
+                messageData={messageData}
+                currentTicker={currentTicker}
+              />
+            )}
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      </div>
     </div>
   )
 }
